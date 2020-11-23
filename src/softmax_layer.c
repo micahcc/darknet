@@ -200,7 +200,7 @@ contrastive_layer make_contrastive_layer(int batch, int w, int h, int c, int cla
     printf(" max_contr_size = %d MB \n", max_contr_size / (1024*1024));
     l.contrast_p_gpu = (contrastive_params *)cuda_make_array(NULL, max_contr_size);
 #endif
-    fprintf(stderr, "contrastive %4d x%4d x%4d x emb_size %4d x batch: %4d  classes = %4d, step = %4d \n", w, h, l.n, l.embedding_size, batch, l.classes, step);
+    fprintf(stderr, "contrastive %4d x%4d x%4d x emb_size %4d x batch: %4d  classes = %4d, step = %4zu \n", w, h, l.n, l.embedding_size, batch, l.classes, step);
     if(l.detection) fprintf(stderr, "detection \n");
     return l;
 }
@@ -420,7 +420,7 @@ void forward_contrastive_layer(contrastive_layer l, network_state state)
 #ifdef GPU
         const int max_contr_size = (l.max_boxes*l.batch)*(l.max_boxes*l.batch);
         if (max_contr_size < contr_size) {
-            printf(" Error: too large number of bboxes: contr_size = %d > max_contr_size  = %d \n", contr_size, max_contr_size);
+            printf(" Error: too large number of bboxes: contr_size = %zu > max_contr_size  = %d \n", contr_size, max_contr_size);
             exit(0);
         }
         int *labels = NULL;

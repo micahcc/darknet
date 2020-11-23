@@ -1,3 +1,7 @@
+#include <stdio.h>
+#include <sys/types.h>
+#include <dirent.h>
+
 #include "network.h"
 #include "detection_layer.h"
 #include "cost_layer.h"
@@ -282,6 +286,72 @@ void validate_yolo_recall(char *cfgfile, char *weightfile)
     }
 }
 
+void run_yolo_dir(char *cfgfile, char *weightfile, char *dirname, char* outFile, float thresh, float nms_thresh)
+{
+    network net = parse_network_cfg(cfgfile);
+    if(weightfile){
+        load_weights(&net, weightfile);
+    }
+    detection_layer l = net.layers[net.n-1];
+    set_batch_network(&net, 1);
+    srand(2222222);
+    const size_t dirname_len = strlen(dirname);
+    char buff[32000];
+    char* inputFullPath = buffer;
+    strncpy(inputFullPath, dirname, 32000);
+    char *input = buff + dirname_len;
+
+    int j;
+    float nms=nms_thresh;
+    box* boxes = (box*)xcalloc(l.side * l.side * l.n, sizeof(box));
+    float** probs = (float**)xcalloc(l.side * l.side * l.n, sizeof(float*));
+    for(j = 0; j < l.side*l.side*l.n; ++j) {
+        probs[j] = (float*)xcalloc(l.classes, sizeof(float));
+    }
+
+    FILE *cocoFile = fopen(outFile, "w");
+    DIR *dp;
+    struct dirent *ep;
+    dp = opendir(dirname);
+    if (dp != NULL) {
+        while (ep = readdir (dp)) {
+            strncpy(input, ep->d_name, 32000 - dirname_len);
+            image im = load_image_color(inputFullPath, 0, 0);
+            image sized = resize_image(im, net.w, net.h);
+            float *X = sized.data;
+            clock_t time=clock();
+            network_predict(net, X);
+            //printf("%s: Predicted in %f seconds.\n", input, sec(clock()-time));
+            get_detection_boxes(l, 1, 1, thresh, probs, boxes, 0);
+            do_nms_sort_v2(boxes, probs, l.side*l.side*l.n, l.classes, nms);
+            //draw_detections(im, l.side*l.side*l.n, thresh, boxes, probs, voc_names, alphabet, 20);
+            //draw_detections(im, l.side*l.side*l.n, thresh, boxes, probs, voc_names, alphabet, 20);
+            //save_image(im, "predictions");
+            //show_image(im, "predictions");
+
+
+
+            free_image(im);
+            free_image(sized);
+
+            wait_until_press_key_cv();
+            destroy_all_windows_cv();
+
+        }
+        (void)closedir(dp);
+    } else {
+        perror("Couldn't open the directory");
+        return 1;
+    }
+
+    fclose(cocoFile);
+    free(boxes);
+    for(j = 0; j < l.side*l.side*l.n; ++j) {
+        free(probs[j]);
+    }
+    free(probs);
+}
+
 void test_yolo(char *cfgfile, char *weightfile, char *filename, float thresh)
 {
     image **alphabet = load_alphabet();
@@ -363,6 +433,7 @@ void run_yolo(int argc, char **argv)
     else if(0==strcmp(argv[2], "train")) train_yolo(cfg, weights);
     else if(0==strcmp(argv[2], "valid")) validate_yolo(cfg, weights);
     else if(0==strcmp(argv[2], "recall")) validate_yolo_recall(cfg, weights);
+    else if(0==strcmp(argv[2], "rundir")) run_yolo_dir(cfg, weights);
     else if(0==strcmp(argv[2], "demo")) demo(cfg, weights, thresh, hier_thresh, cam_index, filename, voc_names, 20, 1, frame_skip,
 		prefix, out_filename, mjpeg_port, 0, json_port, dont_show, ext_output, 0, 0, 0, 0, 0);
 }
