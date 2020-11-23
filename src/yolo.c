@@ -286,70 +286,127 @@ void validate_yolo_recall(char *cfgfile, char *weightfile)
     }
 }
 
+void print_detections(FILE *fp, int image_id, detection *dets, int ndets, int classes, int w, int h , float predTime)
+{
+    static int coco_ids[] = {1,2,3,4,5,6,7,8,9,10,11,13,14,15,16,17,18,19,20,21,22,23,24,25,27,28,31,32,33,34,35,36,37,38,39,40,41,42,43,44,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,67,70,72,73,74,75,76,77,78,79,80,81,82,84,85,86,87,88,89,90};
+    int i, j;
+    for(i = 0; i < ndets; ++i){
+        float xmin = dets[i].bbox.x - dets[i].bbox.w/2.;
+        float xmax = dets[i].bbox.x + dets[i].bbox.w/2.;
+        float ymin = dets[i].bbox.y - dets[i].bbox.h/2.;
+        float ymax = dets[i].bbox.y + dets[i].bbox.h/2.;
+
+        if (xmin < 0) xmin = 0;
+        if (ymin < 0) ymin = 0;
+        if (xmax > w) xmax = w;
+        if (ymax > h) ymax = h;
+
+        float bx = xmin;
+        float by = ymin;
+        float bw = xmax - xmin;
+        float bh = ymax - ymin;
+
+        for(j = 0; j < classes; ++j){
+            if (dets[i].prob[j] > 0) {
+                fprintf(fp, "{"
+                    "\"image_id\":%d, "
+                    "\"category_id\":%d, "
+                    "\"bbox\":[%f, %f, %f, %f], "
+                    "\"infer_s\": %f, "
+                    "\"score\":%f},\n",
+                    image_id, coco_ids[j], bx, by, bw, bh, predTime, dets[i].prob[j]
+                );
+            }
+        }
+    }
+}
+
 void run_yolo_dir(char *cfgfile, char *weightfile, char *dirname, char* outFile, float thresh, float nms_thresh)
 {
+    if(cfgfile == NULL) {
+        fprintf(stderr, "Must provide a configfile\n");
+        return;
+    } else {
+        printf("Config:  %s\n", cfgfile);
+    }
+
+    if(weightfile == NULL) {
+        fprintf(stderr, "Must provide a weightfile\n");
+        return;
+    } else {
+        printf("Weights: %s\n", weightfile);
+    }
+
+    if(dirname == NULL) {
+        fprintf(stderr, "Must provide a -dirname\n");
+        return;
+    } else {
+        printf("Dir    : %s\n", dirname);
+    }
+
+    if(outFile == NULL) {
+        fprintf(stderr, "Must provide a -out_filename\n");
+        return;
+    } else {
+        printf("Output : %s\n", outFile);
+    }
+
+    const int classes = 80;
     network net = parse_network_cfg(cfgfile);
     if(weightfile){
         load_weights(&net, weightfile);
     }
-    detection_layer l = net.layers[net.n-1];
     set_batch_network(&net, 1);
     srand(2222222);
     const size_t dirname_len = strlen(dirname);
+    printf("Running on files in %s", dirname);
     char buff[32000];
-    char* inputFullPath = buffer;
+    char* inputFullPath = buff;
     strncpy(inputFullPath, dirname, 32000);
     char *input = buff + dirname_len;
+    int ndets = 0;
+    detection* dets = NULL;
 
-    int j;
-    float nms=nms_thresh;
-    box* boxes = (box*)xcalloc(l.side * l.side * l.n, sizeof(box));
-    float** probs = (float**)xcalloc(l.side * l.side * l.n, sizeof(float*));
-    for(j = 0; j < l.side*l.side*l.n; ++j) {
-        probs[j] = (float*)xcalloc(l.classes, sizeof(float));
-    }
+    float hier = 0; // doesn't matter
+    int relative = 0; // doesn't matter
+    int* map = NULL; // doesn't matter
+
+    int letterbox = 1;
 
     FILE *cocoFile = fopen(outFile, "w");
+    fprintf(cocoFile, "[\n");
     DIR *dp;
     struct dirent *ep;
     dp = opendir(dirname);
     if (dp != NULL) {
-        while (ep = readdir (dp)) {
+        while ((ep = readdir (dp))) {
             strncpy(input, ep->d_name, 32000 - dirname_len);
             image im = load_image_color(inputFullPath, 0, 0);
-            image sized = resize_image(im, net.w, net.h);
+            image sized = letterbox_image(im, net.w, net.h);
             float *X = sized.data;
             clock_t time=clock();
             network_predict(net, X);
-            //printf("%s: Predicted in %f seconds.\n", input, sec(clock()-time));
-            get_detection_boxes(l, 1, 1, thresh, probs, boxes, 0);
-            do_nms_sort_v2(boxes, probs, l.side*l.side*l.n, l.classes, nms);
-            //draw_detections(im, l.side*l.side*l.n, thresh, boxes, probs, voc_names, alphabet, 20);
-            //draw_detections(im, l.side*l.side*l.n, thresh, boxes, probs, voc_names, alphabet, 20);
-            //save_image(im, "predictions");
-            //show_image(im, "predictions");
+            float predTime = sec(clock()-time);
+            printf("%s: Predicted in %f seconds.\n", inputFullPath, predTime);
+            dets = get_network_boxes(&net, im.w, im.h, thresh, hier, map, relative, &ndets, letterbox);
+            do_nms_sort(dets, ndets, classes, nms_thresh);
 
-
+            const int imageId = atoi(ep->d_name);
+            print_detections(cocoFile, imageId, dets, ndets, classes, im.w, im.h, predTime);
 
             free_image(im);
             free_image(sized);
-
-            wait_until_press_key_cv();
-            destroy_all_windows_cv();
-
+            free_detections(dets, ndets);
         }
         (void)closedir(dp);
     } else {
         perror("Couldn't open the directory");
-        return 1;
+        return;
     }
 
+    fprintf(cocoFile, "]\n");
+    fprintf(stderr, "Closing CocoFile\n");
     fclose(cocoFile);
-    free(boxes);
-    for(j = 0; j < l.side*l.side*l.n; ++j) {
-        free(probs[j]);
-    }
-    free(probs);
 }
 
 void test_yolo(char *cfgfile, char *weightfile, char *filename, float thresh)
@@ -412,11 +469,13 @@ void test_yolo(char *cfgfile, char *weightfile, char *filename, float thresh)
 void run_yolo(int argc, char **argv)
 {
 	int dont_show = find_arg(argc, argv, "-dont_show");
+	char* dirname = find_char_arg(argc, argv, "-dirname", 0);
 	int mjpeg_port = find_int_arg(argc, argv, "-mjpeg_port", -1);
     int json_port = find_int_arg(argc, argv, "-json_port", -1);
 	char *out_filename = find_char_arg(argc, argv, "-out_filename", 0);
     char *prefix = find_char_arg(argc, argv, "-prefix", 0);
     float thresh = find_float_arg(argc, argv, "-thresh", .2);
+    float nms_thresh = find_float_arg(argc, argv, "-nms", .4);
 	float hier_thresh = find_float_arg(argc, argv, "-hier", .5);
     int cam_index = find_int_arg(argc, argv, "-c", 0);
     int frame_skip = find_int_arg(argc, argv, "-s", 0);
@@ -433,7 +492,8 @@ void run_yolo(int argc, char **argv)
     else if(0==strcmp(argv[2], "train")) train_yolo(cfg, weights);
     else if(0==strcmp(argv[2], "valid")) validate_yolo(cfg, weights);
     else if(0==strcmp(argv[2], "recall")) validate_yolo_recall(cfg, weights);
-    else if(0==strcmp(argv[2], "rundir")) run_yolo_dir(cfg, weights);
-    else if(0==strcmp(argv[2], "demo")) demo(cfg, weights, thresh, hier_thresh, cam_index, filename, voc_names, 20, 1, frame_skip,
+    else if(0==strcmp(argv[2], "rundir")) {
+        run_yolo_dir(cfg, weights, dirname, out_filename, thresh, nms_thresh);
+    } else if(0==strcmp(argv[2], "demo")) demo(cfg, weights, thresh, hier_thresh, cam_index, filename, voc_names, 20, 1, frame_skip,
 		prefix, out_filename, mjpeg_port, 0, json_port, dont_show, ext_output, 0, 0, 0, 0, 0);
 }
